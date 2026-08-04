@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>XML 比對工具</title>
+<!-- lz-string：用來把 XML 內容壓縮進分享連結的 URL Hash（純前端，不需伺服器） -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 <style>
   :root{
     --bg:#0f1220;
@@ -130,7 +132,10 @@
   .actions{
     display:flex;
     justify-content:center;
+    align-items:center;
+    gap:14px;
     margin:26px 0;
+    flex-wrap:wrap;
   }
   #compareBtn{
     background:linear-gradient(90deg,var(--accent),var(--accent-2));
@@ -146,6 +151,39 @@
   }
   #compareBtn:hover{transform:translateY(-2px);}
   #compareBtn:active{transform:translateY(0);}
+  .btn-secondary{
+    background:var(--panel-2);
+    color:var(--text);
+    border:1px solid var(--border);
+    font-weight:700;
+    font-size:14px;
+    padding:12px 24px;
+    border-radius:999px;
+    cursor:pointer;
+    transition:.15s;
+  }
+  .btn-secondary:hover{border-color:var(--accent);color:var(--accent);}
+  .btn-secondary:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-secondary:disabled:hover{border-color:var(--border);color:var(--text);}
+  .toast{
+    position:fixed;
+    left:50%;
+    bottom:28px;
+    transform:translate(-50%, 16px);
+    background:var(--panel-2);
+    border:1px solid var(--accent);
+    color:var(--text);
+    padding:13px 24px;
+    border-radius:10px;
+    box-shadow:var(--shadow);
+    font-size:14px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .25s, transform .25s;
+    z-index:999;
+    max-width:90vw;
+  }
+  .toast.show{opacity:1;transform:translate(-50%, 0);}
   #errorBox{
     background:rgba(255,107,129,0.12);
     border:1px solid var(--red);
@@ -325,7 +363,7 @@
 
   <div class="card input-grid">
     <div class="input-col">
-      <h2><span class="badge-a">A</span> 舊版 / 原始 XML</h2>
+      <h2><span class="badge-a">A</span> 舊版 / <span id="fileLabelA">原始 XML</span></h2>
       <textarea id="xmlA" placeholder="請貼上第一份 XML 內容，或點擊下方「上傳 .xml 檔案」..."></textarea>
       <div class="row-tools">
         <label class="file-btn">📁 上傳 .xml 檔案
@@ -336,7 +374,7 @@
       </div>
     </div>
     <div class="input-col">
-      <h2><span class="badge-b">B</span> 新版 / 待比對 XML</h2>
+      <h2><span class="badge-b">B</span> 新版 / <span id="fileLabelB">待比對 XML</span></h2>
       <textarea id="xmlB" placeholder="請貼上第二份 XML 內容，或點擊下方「上傳 .xml 檔案」..."></textarea>
       <div class="row-tools">
         <label class="file-btn">📁 上傳 .xml 檔案
@@ -350,9 +388,12 @@
 
   <div class="actions">
     <button id="compareBtn" type="button">開始比對 ➜</button>
+    <button id="shareBtn" class="btn-secondary" type="button">🔗 一鍵生成分享連結</button>
+    <button id="exportBtn" class="btn-secondary" type="button" disabled>📄 匯出 HTML 報告</button>
   </div>
 
   <div id="errorBox" class="hidden"></div>
+  <div id="toast" class="toast"></div>
 
   <div id="resultSection" class="hidden">
     <div class="summary-bar">
@@ -393,18 +434,35 @@
   const fileB = document.getElementById('fileB');
   const fileNameA = document.getElementById('fileNameA');
   const fileNameB = document.getElementById('fileNameB');
+  const fileLabelA = document.getElementById('fileLabelA');
+  const fileLabelB = document.getElementById('fileLabelB');
   const clearA = document.getElementById('clearA');
   const clearB = document.getElementById('clearB');
   const compareBtn = document.getElementById('compareBtn');
+  const shareBtn = document.getElementById('shareBtn');
+  const exportBtn = document.getElementById('exportBtn');
   const errorBox = document.getElementById('errorBox');
   const resultSection = document.getElementById('resultSection');
+  const toastEl = document.getElementById('toast');
+
+  // Default text shown after the "/" in each pane's title before a file is loaded.
+  const DEFAULT_LABEL_A = '原始 XML';
+  const DEFAULT_LABEL_B = '待比對 XML';
+
+  // Raw XML text + pane title captured from the most recent *successful* compare()
+  // run — used by the "匯出 HTML 報告" WinMerge-style full-content export.
+  let lastTextA = '';
+  let lastTextB = '';
+  let lastLabelA = DEFAULT_LABEL_A;
+  let lastLabelB = DEFAULT_LABEL_B;
 
   // ---------- File upload handling ----------
-  function wireFileInput(inputEl, textareaEl, nameLabelEl){
+  function wireFileInput(inputEl, textareaEl, nameLabelEl, titleLabelEl){
     inputEl.addEventListener('change', function(e){
       const file = e.target.files && e.target.files[0];
       if(!file) return;
       nameLabelEl.textContent = file.name;
+      if(titleLabelEl) titleLabelEl.textContent = file.name;
       const reader = new FileReader();
       reader.onload = function(ev){
         textareaEl.value = ev.target.result;
@@ -415,11 +473,21 @@
       reader.readAsText(file, 'UTF-8');
     });
   }
-  wireFileInput(fileA, xmlAEl, fileNameA);
-  wireFileInput(fileB, xmlBEl, fileNameB);
+  wireFileInput(fileA, xmlAEl, fileNameA, fileLabelA);
+  wireFileInput(fileB, xmlBEl, fileNameB, fileLabelB);
 
-  clearA.addEventListener('click', function(){ xmlAEl.value=''; fileA.value=''; fileNameA.textContent=''; });
-  clearB.addEventListener('click', function(){ xmlBEl.value=''; fileB.value=''; fileNameB.textContent=''; });
+  clearA.addEventListener('click', function(){
+    xmlAEl.value = '';
+    fileA.value = '';
+    fileNameA.textContent = '';
+    fileLabelA.textContent = DEFAULT_LABEL_A;
+  });
+  clearB.addEventListener('click', function(){
+    xmlBEl.value = '';
+    fileB.value = '';
+    fileNameB.textContent = '';
+    fileLabelB.textContent = DEFAULT_LABEL_B;
+  });
 
   // ---------- Tabs ----------
   document.querySelectorAll('.tab-btn').forEach(function(btn){
@@ -640,6 +708,7 @@
     errorBox.classList.add('hidden');
     errorBox.textContent = '';
     resultSection.classList.add('hidden');
+    exportBtn.disabled = true;
 
     const textA = xmlAEl.value.trim();
     const textB = xmlBEl.value.trim();
@@ -723,7 +792,13 @@
     document.getElementById('statRemoved').textContent = removedCount;
     document.getElementById('statChanged').textContent = changedCount;
 
+    lastTextA = textA;
+    lastTextB = textB;
+    lastLabelA = fileLabelA.textContent || DEFAULT_LABEL_A;
+    lastLabelB = fileLabelB.textContent || DEFAULT_LABEL_B;
+
     resultSection.classList.remove('hidden');
+    exportBtn.disabled = false;
     resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -820,7 +895,434 @@
     errorBox.classList.remove('hidden');
   }
 
+  // ---------- Toast ----------
+  let toastTimer = null;
+  function showToast(msg){
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toastEl.classList.remove('show'); }, 2800);
+  }
+
+  // ---------- 分享連結（用 lz-string 把兩份 XML 壓進 URL Hash，無需伺服器） ----------
+  function generateShareLink(){
+    if(typeof LZString === 'undefined'){
+      alert('分享連結功能需要載入 lz-string 函式庫，請確認網路連線後重新整理頁面再試一次。');
+      return;
+    }
+    const a = xmlAEl.value;
+    const b = xmlBEl.value;
+    if(!a.trim() && !b.trim()){
+      alert('請先貼上或上傳 XML 內容，才能產生分享連結。');
+      return;
+    }
+    let compressed;
+    try{
+      const payload = JSON.stringify({ a: a, b: b, fnA: fileLabelA.textContent, fnB: fileLabelB.textContent });
+      compressed = LZString.compressToEncodedURIComponent(payload);
+    }catch(err){
+      alert('產生分享連結時發生錯誤：' + err.message);
+      return;
+    }
+    const shareUrl = location.origin + location.pathname + '#share=' + compressed;
+    history.replaceState(null, '', '#share=' + compressed);
+    copyText(shareUrl, shareBtn);
+    showToast('🔗 分享連結已複製！貼給同事即可自動開啟並顯示比對結果。（若 XML 內容很大，網址會很長，但仍可正常使用）');
+  }
+
+  // ---------- 匯出獨立可開啟的 HTML 報告（WinMerge 風格、完整逐行雙欄比對） ----------
+  function formatDateYYYYMMDD(d){
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return '' + y + m + day;
+  }
+
+  function splitLines(text){
+    return String(text == null ? '' : text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  }
+
+  // Myers O(ND) line-diff algorithm — efficient for the common case of two mostly-
+  // identical files with only a handful of changed lines (which is what version-to-
+  // version ME config diffing usually looks like).
+  function myersDiff(a, b){
+    const N = a.length, M = b.length;
+    const MAX = N + M;
+    if(MAX === 0) return [];
+    const v = new Map();
+    v.set(1, 0);
+    const trace = [];
+    for(let d = 0; d <= MAX; d++){
+      trace.push(new Map(v));
+      for(let k = -d; k <= d; k += 2){
+        let x;
+        if(k === -d || (k !== d && (v.get(k - 1) || 0) < (v.get(k + 1) || 0))){
+          x = v.get(k + 1) || 0;
+        } else {
+          x = (v.get(k - 1) || 0) + 1;
+        }
+        let y = x - k;
+        while(x < N && y < M && a[x] === b[y]){ x++; y++; }
+        v.set(k, x);
+        if(x >= N && y >= M){
+          return backtrackMyers(trace, N, M);
+        }
+      }
+    }
+    return backtrackMyers(trace, N, M);
+  }
+
+  function backtrackMyers(trace, N, M){
+    let x = N, y = M;
+    const result = [];
+    for(let d = trace.length - 1; d >= 0; d--){
+      const v = trace[d];
+      const k = x - y;
+      let prevK;
+      if(k === -d || (k !== d && (v.get(k - 1) || 0) < (v.get(k + 1) || 0))){
+        prevK = k + 1;
+      } else {
+        prevK = k - 1;
+      }
+      const prevX = v.get(prevK) || 0;
+      const prevY = prevX - prevK;
+      while(x > prevX && y > prevY){
+        result.push({ type: 'equal', aIndex: x - 1, bIndex: y - 1 });
+        x--; y--;
+      }
+      if(d > 0){
+        if(x === prevX){
+          result.push({ type: 'insert', bIndex: y - 1 });
+        } else {
+          result.push({ type: 'delete', aIndex: x - 1 });
+        }
+      }
+      x = prevX; y = prevY;
+    }
+    return result.reverse();
+  }
+
+  // Turns the raw Myers edit script into WinMerge-style aligned rows: equal rows show
+  // the same line on both sides; consecutive delete/insert runs are paired up 1:1 into
+  // "change" rows (old on the left, new on the right), with any leftover unpaired
+  // deletes/inserts shown as their own row (blank on the other side).
+  function buildSideBySideRows(a, b){
+    const ops = myersDiff(a, b);
+    const rows = [];
+    let i = 0;
+    while(i < ops.length){
+      if(ops[i].type === 'equal'){
+        rows.push({ type: 'equal', aLine: a[ops[i].aIndex], bLine: b[ops[i].bIndex], aNum: ops[i].aIndex + 1, bNum: ops[i].bIndex + 1 });
+        i++;
+        continue;
+      }
+      const dels = [];
+      const inss = [];
+      while(i < ops.length && (ops[i].type === 'delete' || ops[i].type === 'insert')){
+        if(ops[i].type === 'delete') dels.push(ops[i]); else inss.push(ops[i]);
+        i++;
+      }
+      const pairCount = Math.max(dels.length, inss.length);
+      for(let p = 0; p < pairCount; p++){
+        const d = dels[p], ins = inss[p];
+        rows.push({
+          type: (d && ins) ? 'change' : (d ? 'delete' : 'insert'),
+          aLine: d ? a[d.aIndex] : null,
+          bLine: ins ? b[ins.bIndex] : null,
+          aNum: d ? (d.aIndex + 1) : null,
+          bNum: ins ? (ins.bIndex + 1) : null
+        });
+      }
+    }
+    return rows;
+  }
+
+  // ---- Word/character-level intra-line diff for "change" rows (LCS over tokens) ----
+  function tokenizeForDiff(line){
+    return line.match(/\s+|[A-Za-z0-9_]+|[^\sA-Za-z0-9_]/g) || [];
+  }
+
+  function tokenDiff(aTokens, bTokens){
+    const n = aTokens.length, m = bTokens.length;
+    const dp = new Array(n + 1);
+    for(let i = 0; i <= n; i++){ dp[i] = new Uint16Array(m + 1); }
+    for(let i = n - 1; i >= 0; i--){
+      for(let j = m - 1; j >= 0; j--){
+        dp[i][j] = (aTokens[i] === bTokens[j]) ? (dp[i+1][j+1] + 1) : Math.max(dp[i+1][j], dp[i][j+1]);
+      }
+    }
+    const aOps = [], bOps = [];
+    let i = 0, j = 0;
+    while(i < n && j < m){
+      if(aTokens[i] === bTokens[j]){
+        aOps.push({ type: 'equal', text: aTokens[i] });
+        bOps.push({ type: 'equal', text: bTokens[j] });
+        i++; j++;
+      } else if(dp[i+1][j] >= dp[i][j+1]){
+        aOps.push({ type: 'del', text: aTokens[i] });
+        i++;
+      } else {
+        bOps.push({ type: 'ins', text: bTokens[j] });
+        j++;
+      }
+    }
+    while(i < n){ aOps.push({ type: 'del', text: aTokens[i] }); i++; }
+    while(j < m){ bOps.push({ type: 'ins', text: bTokens[j] }); j++; }
+    return { aOps: aOps, bOps: bOps };
+  }
+
+  function wordDiffHighlight(oldLine, newLine){
+    const aTokens = tokenizeForDiff(oldLine || '');
+    const bTokens = tokenizeForDiff(newLine || '');
+    // Guard against pathologically long single lines (e.g. minified data) blowing up
+    // the O(n*m) token table — fall back to the simple whole-line highlighter instead.
+    if(aTokens.length * bTokens.length > 200000){
+      return diffHighlight(oldLine, newLine);
+    }
+    const diff = tokenDiff(aTokens, bTokens);
+    const oldHtml = diff.aOps.map(function(op){
+      const t = escapeHtml(op.text);
+      return op.type === 'del' ? '<mark class="wdiff-old">' + t + '</mark>' : t;
+    }).join('');
+    const newHtml = diff.bOps.map(function(op){
+      const t = escapeHtml(op.text);
+      return op.type === 'ins' ? '<mark class="wdiff-new">' + t + '</mark>' : t;
+    }).join('');
+    return { oldHtml: oldHtml, newHtml: newHtml };
+  }
+
+  // Light / white WinMerge-style palette. Word-level marks only ever appear inside
+  // "change" rows (delete/insert rows are whole-line, no partial marks), so they get
+  // one single vivid orange-yellow treatment rather than separate red/green variants.
+  const REPORT_CSS = ':root{' +
+    '--bg:#ffffff;--panel:#f6f6f6;--border:#dcdcdc;--text:#000000;--text-dim:#5a5a5a;' +
+    '--change-bg:#FFE066;--change-mark:#FFB703;' +
+    '--delete-bg:#FFD2D2;--insert-bg:#D2FFD2;' +
+    '}\n' +
+    '*{box-sizing:border-box;}\n' +
+    'html,body{margin:0;height:100%;}\n' +
+    'body{background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;display:flex;flex-direction:column;min-height:100vh;}\n' +
+    '.rep-toolbar{background:var(--panel);border-bottom:1px solid var(--border);padding:14px 20px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;flex:0 0 auto;}\n' +
+    '.rep-title{font-weight:700;font-size:16px;color:#000;}\n' +
+    '.rep-meta{color:var(--text-dim);font-size:12.5px;}\n' +
+    '.rep-nav{margin-left:auto;display:flex;align-items:center;gap:10px;}\n' +
+    '.rep-nav button{background:#fff;border:1px solid var(--border);color:#000;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;}\n' +
+    '.rep-nav button:hover{border-color:#2563eb;color:#2563eb;}\n' +
+    '#diffCounter{font-size:12.5px;color:var(--text-dim);min-width:70px;text-align:center;display:inline-block;}\n' +
+    '.rep-pane-headers{display:flex;background:var(--panel);border-bottom:1px solid var(--border);flex:0 0 auto;}\n' +
+    '.pane-head{flex:1;padding:8px 14px;font-weight:700;font-size:13px;color:var(--text-dim);}\n' +
+    '.pane-head.pane-a{border-right:1px solid var(--border);}\n' +
+    '.rep-legend{padding:10px 20px;font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--border);flex:0 0 auto;}\n' +
+    '.lg-swatch{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:2px;vertical-align:-2px;border:1px solid var(--border);}\n' +
+    '.lg-change{background:var(--change-bg);}\n' +
+    '.lg-delete{background:var(--delete-bg);}\n' +
+    '.lg-insert{background:var(--insert-bg);}\n' +
+    '.lg-mark{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:2px;vertical-align:-2px;background:var(--change-mark);}\n' +
+    // Two entirely separate <table> elements (one per pane) inside a shared vertical
+    // scroll container: this is what makes left/right text selection independent —
+    // a browser cannot bleed a selection across two unrelated table DOM trees the way
+    // it can across columns that live inside the *same* table row.
+    // Each pane owns its own vertical scrollbar (overflow-y on .pane-scroll itself,
+    // not on the shared .rep-viewport) — the two are kept lined up purely by the JS
+    // scroll-sync below, both for the nav buttons and for manual mouse scrolling.
+    '.rep-viewport{display:flex;flex:1 1 auto;min-height:0;}\n' +
+    '.pane-scroll{flex:1;min-width:0;height:100%;overflow-y:auto;overflow-x:hidden;}\n' +
+    '.pane-scroll.pane-a{border-right:1px solid var(--border);}\n' +
+    'table.diff-table{width:100%;border-collapse:collapse;font-family:Consolas,"SFMono-Regular","Courier New",monospace;font-size:12.5px;}\n' +
+    'table.diff-table td{vertical-align:top;padding:0;border-bottom:1px solid #eee;}\n' +
+    'td.ln{width:52px;min-width:52px;text-align:right;padding:2px 8px;color:var(--text-dim);user-select:none;background:#fafafa;border-right:1px solid var(--border);}\n' +
+    'td.code{padding:2px 10px;}\n' +
+    // Word wrap on: long tags/paths fold onto multiple visual lines instead of
+    // requiring a horizontal scrollbar.
+    'td.code pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:inherit;color:#000;}\n' +
+    '.cell-change{background:var(--change-bg);}\n' +
+    '.cell-delete{background:var(--delete-bg);}\n' +
+    '.cell-insert{background:var(--insert-bg);}\n' +
+    '.cell-empty{background:repeating-linear-gradient(45deg, #f0f0f0 0 8px, #f7f7f7 8px 16px);}\n' +
+    'mark.wdiff-old, mark.wdiff-new{background:var(--change-mark);color:#000;border-radius:2px;padding:0 1px;font-weight:700;}\n' +
+    '.rep-footer{text-align:center;color:var(--text-dim);font-size:12px;padding:10px 0;background:#fff;border-top:1px solid var(--border);flex:0 0 auto;}\n';
+
+  const REPORT_NAV_SCRIPT = '(function(){\n' +
+    '  var leftRows = Array.prototype.slice.call(document.querySelectorAll(".pane-a table tr.row-change, .pane-a table tr.row-delete, .pane-a table tr.row-insert"));\n' +
+    '  var rightRows = Array.prototype.slice.call(document.querySelectorAll(".pane-b table tr.row-change, .pane-b table tr.row-delete, .pane-b table tr.row-insert"));\n' +
+    '  var idx = -1;\n' +
+    '  var counter = document.getElementById("diffCounter");\n' +
+    '  var paneA = document.querySelector(".pane-scroll.pane-a");\n' +
+    '  var paneB = document.querySelector(".pane-scroll.pane-b");\n' +
+    '  var syncing = false;\n' +
+    '  function updateCounter(){ counter.textContent = (leftRows.length ? (idx + 1) : 0) + " / " + leftRows.length; }\n' +
+    '  function goTo(newIdx){\n' +
+    '    if(leftRows.length === 0) return;\n' +
+    '    idx = (newIdx + leftRows.length) % leftRows.length;\n' +
+    '    syncing = true;\n' +
+    '    leftRows[idx].scrollIntoView({ behavior: "smooth", block: "center" });\n' +
+    '    if(rightRows[idx]){ rightRows[idx].scrollIntoView({ behavior: "smooth", block: "center" }); }\n' +
+    '    updateCounter();\n' +
+    // Give the smooth-scroll animation time to finish before re-enabling the manual
+    // mirror listener below, so it does not fight with (or get confused by) the
+    // two independent scrollIntoView calls landing at slightly different times.
+    '    setTimeout(function(){ syncing = false; }, 500);\n' +
+    '  }\n' +
+    '  document.getElementById("nextDiffBtn").addEventListener("click", function(){ goTo(idx + 1); });\n' +
+    '  document.getElementById("prevDiffBtn").addEventListener("click", function(){ goTo(idx - 1); });\n' +
+    '  updateCounter();\n' +
+    // Manual mouse-wheel / drag scrolling on either pane mirrors to the other so the
+    // two sides always stay on the same row. `syncing` guards against the mirrored
+    // scroll assignment re-triggering this same handler (infinite loop).
+    '  function link(src, dst){\n' +
+    '    src.addEventListener("scroll", function(){\n' +
+    '      if(syncing) return;\n' +
+    '      syncing = true;\n' +
+    '      dst.scrollTop = src.scrollTop;\n' +
+    '      syncing = false;\n' +
+    '    });\n' +
+    '  }\n' +
+    '  if(paneA && paneB){ link(paneA, paneB); link(paneB, paneA); }\n' +
+    '})();\n';
+
+  function buildReportHtml(){
+    const now = new Date();
+    const generatedStr = now.toLocaleString('zh-TW', { hour12: false });
+    const linesA = splitLines(lastTextA);
+    const linesB = splitLines(lastTextB);
+    const rows = buildSideBySideRows(linesA, linesB);
+
+    let equalCount = 0, changeCount = 0, deleteCount = 0, insertCount = 0;
+    const leftRowsHtml = [];
+    const rightRowsHtml = [];
+    rows.forEach(function(row){
+      let leftClass, rightClass, aNumTxt, bNumTxt, aHtml, bHtml;
+      if(row.type === 'equal'){
+        equalCount++;
+        leftClass = 'cell-equal'; rightClass = 'cell-equal';
+        aNumTxt = row.aNum; bNumTxt = row.bNum;
+        aHtml = escapeHtml(row.aLine); bHtml = escapeHtml(row.bLine);
+      } else if(row.type === 'change'){
+        changeCount++;
+        leftClass = 'cell-change'; rightClass = 'cell-change';
+        aNumTxt = row.aNum; bNumTxt = row.bNum;
+        const wd = wordDiffHighlight(row.aLine, row.bLine);
+        aHtml = wd.oldHtml; bHtml = wd.newHtml;
+      } else if(row.type === 'delete'){
+        deleteCount++;
+        leftClass = 'cell-delete'; rightClass = 'cell-empty';
+        aNumTxt = row.aNum; bNumTxt = '';
+        aHtml = escapeHtml(row.aLine); bHtml = '';
+      } else {
+        insertCount++;
+        leftClass = 'cell-empty'; rightClass = 'cell-insert';
+        aNumTxt = ''; bNumTxt = row.bNum;
+        aHtml = ''; bHtml = escapeHtml(row.bLine);
+      }
+      leftRowsHtml.push(
+        '<tr class="diff-row row-' + row.type + '">' +
+          '<td class="ln ' + leftClass + '">' + (aNumTxt === '' ? '' : aNumTxt) + '</td>' +
+          '<td class="code ' + leftClass + '"><pre>' + (aHtml === '' ? '&nbsp;' : aHtml) + '</pre></td>' +
+        '</tr>'
+      );
+      rightRowsHtml.push(
+        '<tr class="diff-row row-' + row.type + '">' +
+          '<td class="ln ' + rightClass + '">' + (bNumTxt === '' ? '' : bNumTxt) + '</td>' +
+          '<td class="code ' + rightClass + '"><pre>' + (bHtml === '' ? '&nbsp;' : bHtml) + '</pre></td>' +
+        '</tr>'
+      );
+    });
+
+    const totalDiffRows = changeCount + deleteCount + insertCount;
+    const colgroup = '<colgroup><col style="width:52px"><col></colgroup>';
+
+    return '<!DOCTYPE html>\n<html lang="zh-Hant">\n<head>\n<meta charset="UTF-8" />\n' +
+      '<title>ME 設定比對報告 - ' + formatDateYYYYMMDD(now) + '</title>\n' +
+      '<style>\n' + REPORT_CSS + '</style>\n</head>\n<body>\n' +
+      '<div class="rep-toolbar">' +
+        '<div class="rep-title">ME 設定比對報告</div>' +
+        '<div class="rep-meta">產生時間：' + escapeHtml(generatedStr) + '　|　相同 ' + equalCount + ' 行　|　變更 ' + changeCount + ' 行　|　僅舊檔 ' + deleteCount + ' 行　|　僅新檔 ' + insertCount + ' 行</div>' +
+        '<div class="rep-nav">' +
+          '<button type="button" id="prevDiffBtn">▲ 上一個差異</button>' +
+          '<span id="diffCounter">0 / ' + totalDiffRows + '</span>' +
+          '<button type="button" id="nextDiffBtn">下一個差異 ▼</button>' +
+        '</div>' +
+      '</div>\n' +
+      '<div class="rep-pane-headers">' +
+        '<div class="pane-head pane-a">🅰 舊版 / ' + escapeHtml(lastLabelA) + '</div>' +
+        '<div class="pane-head pane-b">🅱 新版 / ' + escapeHtml(lastLabelB) + '</div>' +
+      '</div>\n' +
+      '<div class="rep-legend">' +
+        '<span class="lg-swatch lg-change"></span>變更行　' +
+        '<span class="lg-swatch lg-delete"></span>僅舊檔獨有　' +
+        '<span class="lg-swatch lg-insert"></span>僅新檔獨有　' +
+        '<span class="lg-mark"></span>該行內實際不同的文字/字元' +
+      '</div>\n' +
+      '<div class="rep-viewport">' +
+        '<div class="pane-scroll pane-a"><table class="diff-table">' + colgroup + '<tbody>\n' + leftRowsHtml.join('\n') + '\n</tbody></table></div>' +
+        '<div class="pane-scroll pane-b"><table class="diff-table">' + colgroup + '<tbody>\n' + rightRowsHtml.join('\n') + '\n</tbody></table></div>' +
+      '</div>\n' +
+      '<div class="rep-footer">由 XML 比對工具匯出，此檔案為靜態內容，雙擊即可獨立開啟，不需網路連線。</div>\n' +
+      '<script>\n' + REPORT_NAV_SCRIPT + '<\/script>\n</body>\n</html>';
+  }
+
+  function exportReport(){
+    if(exportBtn.disabled){
+      alert('請先按「開始比對」產生結果，再匯出報告。');
+      return;
+    }
+    const totalLines = splitLines(lastTextA).length + splitLines(lastTextB).length;
+    if(totalLines > 8000){
+      const proceed = confirm('兩份檔案合計約 ' + totalLines + ' 行，逐行比對可能需要數秒鐘才能產生報告，是否繼續？');
+      if(!proceed) return;
+    }
+    let html;
+    try{
+      html = buildReportHtml();
+    }catch(err){
+      alert('產生報告時發生錯誤：' + err.message);
+      return;
+    }
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ME_Compare_Report_' + formatDateYYYYMMDD(new Date()) + '.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    showToast('📄 WinMerge 風格報告已下載！');
+  }
+
+  // ---------- 開啟帶有 #share= 的連結時，自動還原內容並執行比對 ----------
+  function tryLoadFromShareHash(){
+    const hash = window.location.hash || '';
+    const marker = '#share=';
+    if(hash.indexOf(marker) !== 0) return;
+    if(typeof LZString === 'undefined'){
+      showError('偵測到分享連結，但 lz-string 函式庫尚未載入完成（可能是網路問題），無法自動還原比對內容。請確認網路連線後重新整理頁面。');
+      return;
+    }
+    const compressed = hash.slice(marker.length);
+    try{
+      const json = LZString.decompressFromEncodedURIComponent(compressed);
+      if(!json) throw new Error('解壓縮結果為空，連結可能已損毀。');
+      const payload = JSON.parse(json);
+      if(typeof payload.a !== 'string' || typeof payload.b !== 'string'){
+        throw new Error('資料格式不正確。');
+      }
+      xmlAEl.value = payload.a;
+      xmlBEl.value = payload.b;
+      // Filenames are optional in older share links — fall back to the defaults.
+      fileLabelA.textContent = (typeof payload.fnA === 'string' && payload.fnA) ? payload.fnA : DEFAULT_LABEL_A;
+      fileLabelB.textContent = (typeof payload.fnB === 'string' && payload.fnB) ? payload.fnB : DEFAULT_LABEL_B;
+      compare();
+    }catch(err){
+      showError('分享連結的資料似乎已損毀或格式不正確，無法自動還原比對內容。\n\n技術訊息：' + err.message);
+    }
+  }
+
   compareBtn.addEventListener('click', compare);
+  shareBtn.addEventListener('click', generateShareLink);
+  exportBtn.addEventListener('click', exportReport);
+
+  tryLoadFromShareHash();
 })();
 </script>
 </body>
